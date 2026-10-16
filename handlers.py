@@ -1,13 +1,12 @@
 """
-Обработчики команд и сообщений для бота "ТВОЙ ЛИЧНЫЙ АГЕНТ"
-Юридические категории и логика консультаций через OpenAI
+Обработчики команд и сообщений бота «ТВОЙ ЛИЧНЫЙ АГЕНТ».
 """
 
 import logging
-from datetime import datetime
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from telegram.constants import ParseMode, ChatAction
+from telegram.constants import ChatAction
 from openai import AsyncOpenAI
 
 from config import Config
@@ -24,10 +23,15 @@ from database import (
 
 logger = logging.getLogger(__name__)
 
-# Инициализация OpenAI клиента
 openai_client = AsyncOpenAI(api_key=Config.OPENAI_API_KEY)
 
-# ── Юридические категории ──────────────────────────────────────────────────────
+LAWYER_URL = "https://t.me/Romanneyman"
+
+CONTACT_TEXT = (
+    "\n\n⚖️ Нужна помощь юриста?\n"
+    "Напиши Роману, чтобы оставить заявку:\n"
+    f"{LAWYER_URL}"
+)
 
 LEGAL_CATEGORIES = {
     "military_law": {
@@ -53,7 +57,7 @@ LEGAL_CATEGORIES = {
     "criminal_law": {
         "emoji": "⚖️",
         "title": "Уголовное право",
-        "description": "Права при задержании, административные нарушения, апелляции",
+        "description": "Права при задержании, уголовные дела, обжалование приговора",
     },
     "civil_law": {
         "emoji": "📋",
@@ -77,98 +81,76 @@ LEGAL_CATEGORIES = {
     },
 }
 
-# ── Системный промпт для юридического консультанта ────────────────────────────
-
 SYSTEM_PROMPT = """
 Ты — «ТВОЙ ЛИЧНЫЙ АГЕНТ», ИИ-помощник по юридическим вопросам.
-Помогаешь человеку разобраться в ситуации простыми словами.
+Помогай человеку разобраться в ситуации простыми словами.
 Не выдавай себя за человека, адвоката или юриста с личной практикой.
 
 СТИЛЬ ОБЩЕНИЯ:
-- Общайся на «ты», тепло и уважительно, как внимательный знакомый,
-  который хочет помочь. Если пользователь просит обращаться на «вы»,
-  уважай эту просьбу.
+- Общайся на «ты», тепло и уважительно. Если пользователь просит
+  обращаться на «вы», уважай эту просьбу.
 - Не используй канцелярит, нравоучения и длинные вступления.
-- Проявляй сочувствие, когда это уместно, но не повторяй шаблонные
-  фразы в каждом ответе.
+- Проявляй сочувствие, когда это уместно, без шаблонных фраз.
 - Не обесценивай проблему словами «не переживай» или «всё просто».
-- Используй 1–3 уместных эмодзи, например: 🙂 💼 📌 ⚖️.
-  В ситуациях насилия, задержания, утраты или опасности избегай
-  весёлых эмодзи и шуток.
-- Не начинай каждое сообщение с приветствия или «Давай разберёмся».
+- Используй 1–3 уместных эмодзи. В ситуациях насилия, задержания,
+  утраты или опасности избегай весёлых эмодзи и шуток.
+- Не начинай каждое сообщение с приветствия.
 
 КАК ПОМОГАТЬ:
-- Сначала коротко ответь по сути понятным языком.
+- Сначала коротко ответь по сути.
 - Если уместно, предложи 2–4 конкретных практических шага.
 - Объясняй юридические термины обычными словами.
-- Если важных данных не хватает, задай 1–2 конкретных вопроса.
-  Не превращай ответ в анкету.
-- Уточняй страну и при необходимости регион, если они ещё
-  неизвестны и от них зависит ответ. Не считай автоматически,
-  что любой вопрос относится к российскому законодательству.
-- Учитывай предыдущие сообщения и не спрашивай повторно то,
-  что пользователь уже сообщил.
-- Не проси присылать паспортные данные, банковские реквизиты,
-  пароли или другие лишние персональные сведения.
-  Предлагай скрывать персональные данные в цитатах из документов.
+- Если важных данных не хватает, задай 1–2 уточняющих вопроса.
+- Уточняй страну и регион, если они неизвестны и от них зависит ответ.
+  Не считай автоматически, что вопрос касается законодательства РФ.
+- Учитывай предыдущие сообщения.
+- Не проси паспортные данные, банковские реквизиты, пароли.
+  Предлагай скрывать персональные данные в документах.
 
-ТОЧНОСТЬ И БЕЗОПАСНОСТЬ:
+ТОЧНОСТЬ:
 - Не выдумывай статьи законов, сроки, судебные решения и факты.
-- Приводи номера статей только при достаточной уверенности
-  в их содержании и применимости.
-- Не утверждай, что проверил актуальное законодательство онлайн:
-  у тебя нет доступа к поиску в этом боте.
+- Приводи номера статей только при достаточной уверенности.
+- Не утверждай, что проверил законодательство онлайн:
+  в этом боте у тебя нет доступа к поиску.
 - Если не уверен, прямо скажи об этом и объясни, что нужно проверить.
 - Не обещай выигрыш дела, получение выплаты или другой результат.
 - При возможных срочных процессуальных сроках предупреждай,
   что их нужно уточнить без промедления.
-- Кратко поясняй, что ответ носит информационный характер
-  и не заменяет индивидуальную консультацию юриста.
-  Не используй длинный формальный дисклеймер.
+- Кратко поясняй, что ответ информационный и не заменяет
+  индивидуальную консультацию юриста. Без длинного дисклеймера.
 
 ФОРМАТ:
-- Пиши короткими абзацами, удобными для чтения в Telegram.
+- Пиши короткими абзацами.
 - Для шагов используй обычную нумерацию.
-- Не используй Markdown-разметку, HTML и таблицы:
-  ответы отправляются обычным текстом.
+- Не используй Markdown, HTML и таблицы: ответы идут обычным текстом.
 - Не навязывай большую структуру для простого вопроса.
-- Не добавляй рекламный блок, контакт юриста или ссылку
-  для заявки самостоятельно: их автоматически добавляет код.
+- Не добавляй контакт юриста и рекламный блок:
+  их автоматически добавляет код.
 """
 
-# ── Вспомогательные функции ───────────────────────────────────────────────────
+
+def lawyer_button():
+    return InlineKeyboardButton("✍️ Написать юристу", url=LAWYER_URL)
+
 
 def build_categories_keyboard() -> InlineKeyboardMarkup:
-    """Создать клавиатуру с категориями юридических вопросов."""
-    keyboard = []
     items = list(LEGAL_CATEGORIES.items())
-    # Располагаем кнопки по 2 в ряд
-    for i in range(0, len(items) - 1, 2):
-        key1, cat1 = items[i]
-        key2, cat2 = items[i + 1]
-        keyboard.append([
+    keyboard = []
+    for i in range(0, len(items), 2):
+        row = [
             InlineKeyboardButton(
-                f"{cat1['emoji']} {cat1['title']}", callback_data=f"cat_{key1}"
-            ),
-            InlineKeyboardButton(
-                f"{cat2['emoji']} {cat2['title']}", callback_data=f"cat_{key2}"
-            ),
-        ])
-    # Последняя категория ("Другой вопрос") — отдельная строка
-    if len(items) % 2 != 0:
-        last_key, last_cat = items[-1]
-        keyboard.append([
-            InlineKeyboardButton(
-                f"{last_cat['emoji']} {last_cat['title']}",
-                callback_data=f"cat_{last_key}",
+                f"{cat['emoji']} {cat['title']}",
+                callback_data=f"cat_{key}",
             )
-        ])
+            for key, cat in items[i:i + 2]
+        ]
+        keyboard.append(row)
+    keyboard.append([lawyer_button()])
     return InlineKeyboardMarkup(keyboard)
 
 
 def build_main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Создать главное меню."""
-    keyboard = [
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📝 Новая консультация", callback_data="new_consultation"),
             InlineKeyboardButton("📚 История", callback_data="show_history"),
@@ -177,98 +159,137 @@ def build_main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 Категории", callback_data="show_categories"),
             InlineKeyboardButton("❓ Помощь", callback_data="show_help"),
         ],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+        [lawyer_button()],
+    ])
 
 
-async def get_ai_response(messages: list[dict], user_question: str) -> str:
-    """Получить ответ от OpenAI GPT."""
-    try:
-        # Формируем контекст разговора
-        conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
-        # Добавляем историю (последние N сообщений)
-        history_limit = Config.MAX_HISTORY_MESSAGES * 2  # user + assistant пары
-        if len(messages) > history_limit:
-            messages = messages[-history_limit:]
-        conversation.extend(messages)
-
-        response = await openai_client.chat.completions.create(
-            model=Config.OPENAI_MODEL,
-            messages=conversation,
-            max_tokens=Config.MAX_TOKENS,
-            temperature=0.7,
-        )
-        return response.choices[0].message.content.strip()
-
-    except Exception as e:
-        logger.error(f"Ошибка OpenAI API: {e}")
-        return (
-            "⚠️ Произошла техническая ошибка при обработке вашего запроса. "
-            "Пожалуйста, попробуйте ещё раз или обратитесь позже."
-        )
+def build_answer_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [lawyer_button()],
+        [
+            InlineKeyboardButton("🔄 Уточнить вопрос", callback_data="continue_session"),
+            InlineKeyboardButton("🆕 Новая тема", callback_data="new_consultation"),
+        ],
+        [InlineKeyboardButton("📋 Категории", callback_data="show_categories")],
+    ])
 
 
-# ── Обработчики команд ────────────────────────────────────────────────────────
+def split_text(text, limit=3500):
+    parts = []
+    current = []
+    units = 0
+    for char in text:
+        size = len(char.encode("utf-16-le")) // 2
+        if units + size > limit:
+            parts.append("".join(current))
+            current = []
+            units = 0
+        current.append(char)
+        units += size
+    if current:
+        parts.append("".join(current))
+    return parts or ["Не получилось подготовить ответ. Попробуй ещё раз."]
 
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /start."""
-    user = update.effective_user
-    db_user = get_or_create_user(
+
+def ensure_user(user):
+    return get_or_create_user(
         telegram_id=user.id,
         username=user.username,
         first_name=user.first_name,
         last_name=user.last_name,
     )
 
-    welcome_text = (
-        f"👋 Здравствуйте, {user.first_name}!\n\n"
-        "⚖️ *ТВОЙ ЛИЧНЫЙ АГЕНТ* — ваш персональный юридический консультант.\n\n"
-        "Здесь вы можете получить консультацию по любым правовым вопросам:\n"
-        "• Военное право и права военнослужащих\n"
-        "• Трудовые споры и увольнение\n"
-        "• Семейные и жилищные вопросы\n"
-        "• Уголовные и административные дела\n"
-        "• И многое другое\n\n"
-        "📌 *Как начать?*\n"
-        "Просто напишите свой вопрос или выберите категорию ниже.\n\n"
-        "_⚠️ Консультации носят информационный характер и не заменяют "
-        "официальную юридическую помощь._"
-    )
 
+def close_current_session(user_id):
+    active = get_active_session(user_id)
+    if active:
+        close_session(active["id"])
+
+
+def format_history(history):
+    if not history:
+        return "📭 История консультаций пока пуста.\nЗадай первый вопрос!"
+    lines = ["📚 Последние консультации:\n"]
+    for i, session in enumerate(history[:10], 1):
+        category = LEGAL_CATEGORIES.get(session.get("category"), {})
+        title = category.get("title", "Общий вопрос")
+        date = str(session.get("started_at") or "")[:10]
+        first = str(session.get("first_message") or "Нет данных")
+        if len(first) > 60:
+            first = first[:60] + "…"
+        lines.append(f"{i}. {title} ({date})\n└ {first}\n")
+    return "\n".join(lines)
+
+
+HELP_TEXT = (
+    "📖 Как пользоваться ботом\n\n"
+    "Просто напиши юридический вопрос своими словами.\n"
+    "Укажи страну, регион и важные даты, если они относятся к делу.\n"
+    "Не присылай пароли, паспортные данные и реквизиты карт.\n\n"
+    "/start — главное меню\n"
+    "/new — новая консультация\n"
+    "/categories — выбрать тему\n"
+    "/history — история консультаций\n"
+    "/help — эта справка"
+)
+
+
+async def get_ai_response(messages: list[dict], user_question: str) -> str:
+    try:
+        limit = max(1, int(Config.MAX_HISTORY_MESSAGES)) * 2
+        history = [
+            {"role": item["role"], "content": item["content"]}
+            for item in messages
+            if item["role"] in ("user", "assistant") and item["content"]
+        ][-limit:]
+        if not history or history[-1]["role"] != "user":
+            history.append({"role": "user", "content": user_question})
+        conversation = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+        response = await openai_client.chat.completions.create(
+            model=Config.OPENAI_MODEL,
+            messages=conversation,
+            max_tokens=Config.MAX_TOKENS,
+            temperature=0.7,
+        )
+        answer = response.choices[0].message.content
+        if not answer or not answer.strip():
+            raise ValueError("OpenAI вернул пустой ответ")
+        return answer.strip()
+    except Exception:
+        logger.exception("Ошибка при получении ответа OpenAI")
+        return (
+            "⚠️ Сейчас не получилось подготовить ответ из-за технической ошибки. "
+            "Попробуй немного позже или напиши юристу напрямую."
+        )
+
+
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    ensure_user(user)
+    text = (
+        f"👋 Привет, {user.first_name}!\n\n"
+        "Я — «ТВОЙ ЛИЧНЫЙ АГЕНТ», ИИ-помощник по юридическим вопросам.\n\n"
+        "Помогу разобраться с работой, жильём, семейными спорами, "
+        "военным правом и другими правовыми вопросами.\n\n"
+        "📌 Напиши свой вопрос или выбери категорию в меню.\n\n"
+        "Ответы носят информационный характер и не заменяют "
+        "индивидуальную консультацию юриста."
+    )
     await update.message.reply_text(
-        welcome_text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=build_main_menu_keyboard(),
+        text, parse_mode=None, reply_markup=build_main_menu_keyboard()
     )
 
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /help."""
-    help_text = (
-        "📖 *Как пользоваться ботом:*\n\n"
-        "1️⃣ *Задайте вопрос* — просто напишите его текстом\n"
-        "2️⃣ *Выберите категорию* — используйте /categories\n"
-        "3️⃣ *Новая консультация* — /new (сбрасывает контекст)\n"
-        "4️⃣ *История* — /history (последние консультации)\n\n"
-        "💡 *Советы для лучшего результата:*\n"
-        "• Описывайте ситуацию максимально подробно\n"
-        "• Указывайте регион и даты, если важно\n"
-        "• Задавайте уточняющие вопросы\n\n"
-        "📞 *Команды:*\n"
-        "/start — главное меню\n"
-        "/new — начать новую консультацию\n"
-        "/categories — выбрать категорию\n"
-        "/history — история консультаций\n"
-        "/help — эта справка"
+    await update.message.reply_text(
+        HELP_TEXT, parse_mode=None, reply_markup=build_main_menu_keyboard()
     )
-    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 
 async def category_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /categories."""
     await update.message.reply_text(
-        "📋 *Выберите категорию вашего вопроса:*",
-        parse_mode=ParseMode.MARKDOWN,
+        "📋 Выбери категорию вопроса:",
+        parse_mode=None,
         reply_markup=build_categories_keyboard(),
     )
 
@@ -276,283 +297,131 @@ async def category_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def new_consultation_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Обработчик команды /new — начать новую консультацию."""
-    user = update.effective_user
-    db_user = get_or_create_user(telegram_id=user.id)
-
-    # Закрыть активную сессию, если есть
-    active = get_active_session(db_user["id"])
-    if active:
-        close_session(active["id"])
-
+    db_user = ensure_user(update.effective_user)
+    close_current_session(db_user["id"])
     await update.message.reply_text(
-        "🆕 *Новая консультация начата.*\n\n"
-        "Задайте ваш юридический вопрос — я готов помочь!\n\n"
-        "Или выберите категорию для более точного ответа:",
-        parse_mode=ParseMode.MARKDOWN,
+        "🆕 Начинаем новую консультацию.\n\nВыбери категорию или напиши вопрос:",
+        parse_mode=None,
         reply_markup=build_categories_keyboard(),
     )
 
 
 async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /history."""
-    user = update.effective_user
-    db_user = get_or_create_user(telegram_id=user.id)
+    db_user = ensure_user(update.effective_user)
     history = get_user_history(db_user["id"])
-
-    if not history:
-        await update.message.reply_text(
-            "📭 У вас пока нет истории консультаций.\n"
-            "Задайте свой первый вопрос!",
-        )
-        return
-
-    text = "📚 *Ваши последние консультации:*\n\n"
-    for i, session in enumerate(history, 1):
-        category = LEGAL_CATEGORIES.get(session.get("category", "other"), {})
-        cat_title = category.get("title", "Общий вопрос")
-        date = session.get("started_at", "")[:10] if session.get("started_at") else ""
-        first_msg = session.get("first_message", "")
-        if first_msg and len(first_msg) > 60:
-            first_msg = first_msg[:60] + "..."
-        text += (
-            f"*{i}.* {cat_title} ({date})\n"
-            f"└ {first_msg or 'Нет данных'}\n\n"
-        )
-
     await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📝 Новая консультация", callback_data="new_consultation")]
-        ]),
+        format_history(history),
+        parse_mode=None,
+        reply_markup=build_main_menu_keyboard(),
     )
 
 
-# ── Обработчик текстовых сообщений ───────────────────────────────────────────
-
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Основной обработчик юридических вопросов пользователя."""
-    user = update.effective_user
+    if not update.message or not update.message.text:
+        return
     user_text = update.message.text.strip()
-
     if not user_text:
         return
 
-    # Получаем или создаём пользователя в БД
-    db_user = get_or_create_user(
-        telegram_id=user.id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name,
-    )
-
-    # Получаем или создаём активную сессию
+    db_user = ensure_user(update.effective_user)
     session = get_active_session(db_user["id"])
-    if not session:
-        session_id = create_session(db_user["id"])
-        session = {"id": session_id}
-        increment_consultation_count(db_user["id"])
-    else:
+    if session:
         session_id = session["id"]
+    else:
+        session_id = create_session(db_user["id"])
+        increment_consultation_count(db_user["id"])
 
-    # Показываем индикатор набора
     await update.message.chat.send_action(ChatAction.TYPING)
-
-    # Сохраняем вопрос пользователя
     save_message(session_id, db_user["id"], "user", user_text)
+    messages = get_session_messages(session_id)
+    answer = await get_ai_response(messages, user_text)
+    save_message(session_id, db_user["id"], "assistant", answer)
 
-    # Получаем историю сессии для контекста
-    session_messages = get_session_messages(session_id)
-
-    # Запрашиваем ответ у OpenAI
-    ai_response = await get_ai_response(session_messages, user_text)
-
-    # Сохраняем ответ ассистента
-    save_message(session_id, db_user["id"], "assistant", ai_response)
-
-    # Контакт юриста добавляется кодом, а не нейросетью
-    lawyer_url = "https://t.me/Romanneyman"
-    contact_text = (
-        "\n\n⚖️ Нужна помощь юриста?\n"
-        "Напиши Роману, чтобы оставить заявку:\n"
-        f"{lawyer_url}"
-    )
-
-    # Сохраняем прежние кнопки и добавляем кнопку юриста
-    reply_markup = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "✍️ Написать юристу",
-                url=lawyer_url,
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔄 Уточнить вопрос",
-                callback_data="continue_session",
-            ),
-            InlineKeyboardButton(
-                "🆕 Новая тема",
-                callback_data="new_consultation",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📋 Категории",
-                callback_data="show_categories",
-            ),
-        ],
-    ])
-
-    # Разбиваем длинный ответ с учётом эмодзи и лимита Telegram.
-    # Оставляем запас для контакта в последнем сообщении.
-    parts = []
-    current_part = []
-    current_units = 0
-
-    for char in ai_response:
-        char_units = len(char.encode("utf-16-le")) // 2
-
-        if current_units + char_units > 3500:
-            parts.append("".join(current_part))
-            current_part = []
-            current_units = 0
-
-        current_part.append(char)
-        current_units += char_units
-
-    if current_part:
-        parts.append("".join(current_part))
-
-    if not parts:
-        parts = ["Не получилось подготовить ответ. Попробуй ещё раз."]
-
-    # Контакт и кнопки прикрепляем к последней части ответа
+    parts = split_text(answer)
     for index, part in enumerate(parts):
         is_last = index == len(parts) - 1
-
         await update.message.reply_text(
-            text=part + contact_text if is_last else part,
-            reply_markup=reply_markup if is_last else None,
+            text=part + CONTACT_TEXT if is_last else part,
             parse_mode=None,
+            reply_markup=build_answer_keyboard() if is_last else None,
             disable_web_page_preview=True,
         )
-            else:
-                await update.message.reply_text(part)
-    else:
-        await update.message.reply_text(ai_response, reply_markup=reply_markup)
 
-
-# ── Обработчик inline-кнопок ─────────────────────────────────────────────────
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик нажатий на inline-кнопки."""
     query = update.callback_query
+    if not query:
+        return
+    data = query.data or ""
+
+    if data == "continue_session":
+        await query.answer()
+        await query.message.reply_text(
+            "✏️ Напиши уточняющий вопрос в чат — продолжим эту консультацию.",
+            parse_mode=None,
+        )
+        return
+
     await query.answer()
+    db_user = ensure_user(query.from_user)
 
-    user = query.from_user
-    data = query.data
-
-    db_user = get_or_create_user(
-        telegram_id=user.id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name,
-    )
-
-    # Выбор категории
     if data.startswith("cat_"):
         category_key = data[4:]
-        category = LEGAL_CATEGORIES.get(category_key, {})
-
-        # Закрываем старую сессию и создаём новую с категорией
-        active = get_active_session(db_user["id"])
-        if active:
-            close_session(active["id"])
+        category = LEGAL_CATEGORIES.get(category_key)
+        if not category:
+            return
+        close_current_session(db_user["id"])
         create_session(db_user["id"], category_key)
         increment_consultation_count(db_user["id"])
-
-        cat_title = category.get("title", "Общий вопрос")
-        cat_desc = category.get("description", "")
-        cat_emoji = category.get("emoji", "⚖️")
-
         await query.edit_message_text(
-            f"{cat_emoji} *{cat_title}*\n\n"
-            f"_{cat_desc}_\n\n"
-            "✏️ Опишите вашу ситуацию подробно — и я помогу разобраться!",
-            parse_mode=ParseMode.MARKDOWN,
+            f"{category['emoji']} {category['title']}\n\n"
+            f"{category['description']}\n\n"
+            "✏️ Опиши свою ситуацию — помогу разобраться.",
+            parse_mode=None,
+            reply_markup=InlineKeyboardMarkup([[lawyer_button()]]),
         )
 
     elif data == "new_consultation":
-        active = get_active_session(db_user["id"])
-        if active:
-            close_session(active["id"])
+        close_current_session(db_user["id"])
         await query.edit_message_text(
-            "🆕 *Новая консультация*\n\n"
-            "Выберите категорию или просто задайте вопрос:",
-            parse_mode=ParseMode.MARKDOWN,
+            "🆕 Новая консультация\n\nВыбери категорию или напиши вопрос:",
+            parse_mode=None,
             reply_markup=build_categories_keyboard(),
         )
 
     elif data == "show_categories":
         await query.edit_message_text(
-            "📋 *Выберите категорию вашего вопроса:*",
-            parse_mode=ParseMode.MARKDOWN,
+            "📋 Выбери категорию вопроса:",
+            parse_mode=None,
             reply_markup=build_categories_keyboard(),
         )
 
     elif data == "show_help":
-        help_text = (
-            "📖 *Помощь*\n\n"
-            "Просто напишите ваш юридический вопрос, и я отвечу на него.\n\n"
-            "Команды:\n"
-            "/new — новая консультация\n"
-            "/categories — выбрать тему\n"
-            "/history — ваши консультации\n"
-            "/help — подробная справка"
-        )
         await query.edit_message_text(
-            help_text,
-            parse_mode=ParseMode.MARKDOWN,
+            HELP_TEXT,
+            parse_mode=None,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
+                [lawyer_button()],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
             ]),
         )
 
     elif data == "show_history":
         history = get_user_history(db_user["id"])
-        if not history:
-            await query.edit_message_text(
-                "📭 История консультаций пока пуста.\nЗадайте первый вопрос!",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
-                ]),
-            )
-        else:
-            text = "📚 *Последние консультации:*\n\n"
-            for i, s in enumerate(history, 1):
-                category = LEGAL_CATEGORIES.get(s.get("category", "other"), {})
-                cat_title = category.get("title", "Общий вопрос")
-                date = s.get("started_at", "")[:10] if s.get("started_at") else ""
-                first_msg = s.get("first_message", "")
-                if first_msg and len(first_msg) > 50:
-                    first_msg = first_msg[:50] + "..."
-                text += f"*{i}.* {cat_title} ({date})\n└ {first_msg or '—'}\n\n"
-            await query.edit_message_text(
-                text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
-                ]),
-            )
+        await query.edit_message_text(
+            format_history(history),
+            parse_mode=None,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "📝 Новая консультация", callback_data="new_consultation"
+                )],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
+            ]),
+        )
 
     elif data == "back_to_menu":
         await query.edit_message_text(
-            "🏠 *Главное меню*\n\nЧем могу помочь?",
-            parse_mode=ParseMode.MARKDOWN,
+            "🏠 Главное меню\n\nЧем помочь?",
+            parse_mode=None,
             reply_markup=build_main_menu_keyboard(),
         )
-
-    elif data == "continue_session":
-        await query.answer("Задайте уточняющий вопрос в чате 👇", show_alert=False)
