@@ -370,25 +370,73 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Сохраняем ответ ассистента
     save_message(session_id, db_user["id"], "assistant", ai_response)
 
-    # Клавиатура под ответом
+    # Контакт юриста добавляется кодом, а не нейросетью
+    lawyer_url = "https://t.me/Romanneyman"
+    contact_text = (
+        "\n\n⚖️ Нужна помощь юриста?\n"
+        "Напиши Роману, чтобы оставить заявку:\n"
+        f"{lawyer_url}"
+    )
+
+    # Сохраняем прежние кнопки и добавляем кнопку юриста
     reply_markup = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔄 Уточнить вопрос", callback_data="continue_session"),
-            InlineKeyboardButton("🆕 Новая тема", callback_data="new_consultation"),
+            InlineKeyboardButton(
+                "✍️ Написать юристу",
+                url=lawyer_url,
+            ),
         ],
         [
-            InlineKeyboardButton("📋 Категории", callback_data="show_categories"),
+            InlineKeyboardButton(
+                "🔄 Уточнить вопрос",
+                callback_data="continue_session",
+            ),
+            InlineKeyboardButton(
+                "🆕 Новая тема",
+                callback_data="new_consultation",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📋 Категории",
+                callback_data="show_categories",
+            ),
         ],
     ])
 
-    # Отправляем ответ (разбиваем если длинный)
-    if len(ai_response) > 4000:
-        parts = [ai_response[i:i+4000] for i in range(0, len(ai_response), 4000)]
-        for j, part in enumerate(parts):
-            if j == len(parts) - 1:
-                await update.message.reply_text(
-                    part, reply_markup=reply_markup
-                )
+    # Разбиваем длинный ответ с учётом эмодзи и лимита Telegram.
+    # Оставляем запас для контакта в последнем сообщении.
+    parts = []
+    current_part = []
+    current_units = 0
+
+    for char in ai_response:
+        char_units = len(char.encode("utf-16-le")) // 2
+
+        if current_units + char_units > 3500:
+            parts.append("".join(current_part))
+            current_part = []
+            current_units = 0
+
+        current_part.append(char)
+        current_units += char_units
+
+    if current_part:
+        parts.append("".join(current_part))
+
+    if not parts:
+        parts = ["Не получилось подготовить ответ. Попробуй ещё раз."]
+
+    # Контакт и кнопки прикрепляем к последней части ответа
+    for index, part in enumerate(parts):
+        is_last = index == len(parts) - 1
+
+        await update.message.reply_text(
+            text=part + contact_text if is_last else part,
+            reply_markup=reply_markup if is_last else None,
+            parse_mode=None,
+            disable_web_page_preview=True,
+        )
             else:
                 await update.message.reply_text(part)
     else:
